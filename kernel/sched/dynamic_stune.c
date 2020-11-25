@@ -34,7 +34,7 @@ static __always_inline void update_schedutil_limits(bool state)
 		 */
 		rq_lock_irqsave(rq, &rf);
 		cpufreq_update_util(rq, state ? 
-			SCHEDUTIL_ACTIVE : SCHEDUTIL_NORMAL);
+			SCHEDUTIL_ACTIVE : SCHEDUTIL_PWRSAVE);
 		rq_unlock_irqrestore(rq, &rf);
 	}
 }

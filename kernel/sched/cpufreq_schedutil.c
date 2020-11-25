@@ -277,8 +277,8 @@ static void __sugov_set_limits(struct sugov_cpu *sg_cpu, bool state)
 
 	sg_cpu->limit_is_active = state;
 
-	up_limit = state ? 500 : 1000;
-	down_limit = state ? 20000 : 1000;
+	up_limit = state ? 500 : 20000;
+	down_limit = state ? 20000 : 500;
 
 	tunables->up_rate_limit_us = up_limit;
 	tunables->down_rate_limit_us = down_limit;
@@ -292,7 +292,7 @@ static void __sugov_set_limits(struct sugov_cpu *sg_cpu, bool state)
 static void sugov_set_limits(struct sugov_cpu *sg_cpu)
 {
 	if ((sg_cpu->flags & SCHEDUTIL_ACTIVE) || 
-		(sg_cpu->flags & SCHEDUTIL_NORMAL)) {
+		(sg_cpu->flags & SCHEDUTIL_PWRSAVE)) {
 		__sugov_set_limits(sg_cpu, 
 			(sg_cpu->flags & SCHEDUTIL_ACTIVE));
 	}
