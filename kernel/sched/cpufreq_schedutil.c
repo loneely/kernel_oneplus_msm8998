@@ -246,17 +246,7 @@ static void sugov_get_util(unsigned long *util, unsigned long *max, u64 time, in
 	*max = max_cap;
 }
 
-static DEFINE_RAW_SPINLOCK(min_rate_lock);
-
-static void update_min_rate_limit_us(struct sugov_policy *sg_policy)
-{
-	raw_spin_lock(&min_rate_lock);
-	sg_policy->min_rate_limit_ns = min(sg_policy->up_rate_delay_ns,
-					   sg_policy->down_rate_delay_ns);
-	raw_spin_unlock(&min_rate_lock);
-}
-
-static void __sugov_set_limits(struct sugov_policy *sg_policy, bool state)
+static void sugov_set_limits(struct sugov_policy *sg_policy, bool state)
 {
 	if (sg_policy->limit_is_active == state)
 		return;
@@ -265,17 +255,7 @@ static void __sugov_set_limits(struct sugov_policy *sg_policy, bool state)
 
 	sg_policy->up_rate_delay_ns = state ? 500000 : 20000000;
 	sg_policy->down_rate_delay_ns = state ? 20000000 : 500000;
-
-	update_min_rate_limit_us(sg_policy);
-}
-
-static void sugov_set_limits(struct sugov_cpu *sg_cpu)
-{
-	if ((sg_cpu->flags & SCHEDUTIL_ACTIVE) || 
-		(sg_cpu->flags & SCHEDUTIL_PWRSAVE)) {
-		__sugov_set_limits(sg_cpu->sg_policy, 
-			(sg_cpu->flags & SCHEDUTIL_ACTIVE));
-	}
+	sg_policy->min_rate_limit_ns = 500000;
 }
 
 static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time)
@@ -359,14 +339,15 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	sugov_set_iowait_boost(sg_cpu, time);
 	sg_cpu->last_update = time;
 
-	sugov_set_limits(sg_cpu);
-
 	/*
 	 * For slow-switch systems, single policy requests can't run at the
 	 * moment if update is in progress, unless we acquire update_lock.
 	 */
 	if (sg_policy->work_in_progress)
 		return;
+
+	if ((flags & SCHEDUTIL_ACTIVE) || (flags & SCHEDUTIL_PWRSAVE))
+		sugov_set_limits(sg_policy, (flags & SCHEDUTIL_ACTIVE));
 
 	if (!sugov_should_update_freq(sg_policy, time))
 		return;
@@ -465,7 +446,8 @@ static void sugov_update_shared(struct update_util_data *hook, u64 time,
 	sugov_set_iowait_boost(sg_cpu, time);
 	sg_cpu->last_update = time;
 
-	sugov_set_limits(sg_cpu);
+	if ((flags & SCHEDUTIL_ACTIVE) || (flags & SCHEDUTIL_PWRSAVE))
+		sugov_set_limits(sg_policy, (flags & SCHEDUTIL_ACTIVE));
 
 	if (sugov_should_update_freq(sg_policy, time)) {
 		if (flags & SCHED_CPUFREQ_DL)
@@ -658,9 +640,7 @@ static int sugov_start(struct cpufreq_policy *policy)
 	struct sugov_policy *sg_policy = policy->governor_data;
 	unsigned int cpu;
 
-	sg_policy->up_rate_delay_ns = 500000;
-	sg_policy->down_rate_delay_ns = 20000000;
-	update_min_rate_limit_us(sg_policy);
+	sugov_set_limits(sg_policy, true);
 	sg_policy->last_freq_update_time = 0;
 	sg_policy->next_freq = 0;
 	sg_policy->work_in_progress = false;
