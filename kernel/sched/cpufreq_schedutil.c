@@ -32,10 +32,13 @@ struct sugov_policy {
 	struct cpufreq_policy *policy;
 
 	raw_spinlock_t update_lock;  /* For shared policies */
+
+	bool limit_is_active;
 	u64 last_freq_update_time;
 	s64 min_rate_limit_ns;
 	s64 up_rate_delay_ns;
 	s64 down_rate_delay_ns;
+
 	unsigned int next_freq;
 	unsigned int cached_raw_freq;
 
@@ -58,8 +61,6 @@ struct sugov_cpu {
 	unsigned int iowait_boost;
 	unsigned int iowait_boost_max;
 	u64 last_update;
-
-	bool limit_is_active;
 
 	/* The fields below are only needed when sharing a policy. */
 	unsigned long util;
@@ -255,14 +256,12 @@ static void update_min_rate_limit_us(struct sugov_policy *sg_policy)
 	raw_spin_unlock(&min_rate_lock);
 }
 
-static void __sugov_set_limits(struct sugov_cpu *sg_cpu, bool state)
+static void __sugov_set_limits(struct sugov_policy *sg_policy, bool state)
 {
-	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
-
-	if (sg_cpu->limit_is_active == state)
+	if (sg_policy->limit_is_active == state)
 		return;
 
-	sg_cpu->limit_is_active = state;
+	sg_policy->limit_is_active = state;
 
 	sg_policy->up_rate_delay_ns = state ? 500000 : 20000000;
 	sg_policy->down_rate_delay_ns = state ? 20000000 : 500000;
@@ -274,7 +273,7 @@ static void sugov_set_limits(struct sugov_cpu *sg_cpu)
 {
 	if ((sg_cpu->flags & SCHEDUTIL_ACTIVE) || 
 		(sg_cpu->flags & SCHEDUTIL_PWRSAVE)) {
-		__sugov_set_limits(sg_cpu, 
+		__sugov_set_limits(sg_cpu->sg_policy, 
 			(sg_cpu->flags & SCHEDUTIL_ACTIVE));
 	}
 }
