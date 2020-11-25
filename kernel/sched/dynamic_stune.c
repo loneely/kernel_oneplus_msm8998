@@ -7,6 +7,7 @@
 #include <linux/sched.h>
 #include <linux/dynamic_stune.h>
 
+#include "sched.h"
 #include "tune.h"
 
 struct dstune_priv {
@@ -14,6 +15,29 @@ struct dstune_priv {
 	unsigned long duration;
 	void (*set)(bool state);
 };
+
+/*
+ * Function to update utilization and schedutil limits during runtime
+ */
+static __always_inline void update_schedutil_limits(bool state)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		struct rq *rq = cpu_rq(cpu);
+		struct rq_flags rf;
+
+		/* 
+		 * Recalculate the governor's frequency for each cpu
+		 * to update utilization and put active/passive limits per
+		 * policy.
+		 */
+		rq_lock_irqsave(rq, &rf);
+		cpufreq_update_util(rq, state ? 
+			SCHEDUTIL_ACTIVE : SCHEDUTIL_NORMAL);
+		rq_unlock_irqrestore(rq, &rf);
+	}
+}
 
 /*
  * Framebuffer structure
@@ -28,6 +52,9 @@ static void set_fb(bool state)
 	do_boost("top-app", state);
 	do_prefer_idle("top-app", state);
 	do_boost_bias("foreground", state);
+
+	/* Update limits after adjusting sched params */
+	update_schedutil_limits(state);
 }
 
 struct dstune fb = {

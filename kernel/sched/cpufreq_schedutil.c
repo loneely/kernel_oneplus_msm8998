@@ -69,6 +69,8 @@ struct sugov_cpu {
 	unsigned int iowait_boost_max;
 	u64 last_update;
 
+	bool limit_is_active;
+
 	/* The fields below are only needed when sharing a policy. */
 	unsigned long util;
 	unsigned long max;
@@ -254,6 +256,48 @@ static void sugov_get_util(unsigned long *util, unsigned long *max, u64 time, in
 	*max = max_cap;
 }
 
+static DEFINE_RAW_SPINLOCK(min_rate_lock);
+
+static void update_min_rate_limit_us(struct sugov_policy *sg_policy)
+{
+	raw_spin_lock(&min_rate_lock);
+	sg_policy->min_rate_limit_ns = min(sg_policy->up_rate_delay_ns,
+					   sg_policy->down_rate_delay_ns);
+	raw_spin_unlock(&min_rate_lock);
+}
+
+static void __sugov_set_limits(struct sugov_cpu *sg_cpu, bool state)
+{
+	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
+	struct sugov_tunables *tunables = sg_policy->tunables;
+	unsigned int up_limit, down_limit;
+
+	if (sg_cpu->limit_is_active == state)
+		return;
+
+	sg_cpu->limit_is_active = state;
+
+	up_limit = state ? 500 : 1000;
+	down_limit = state ? 20000 : 1000;
+
+	tunables->up_rate_limit_us = up_limit;
+	tunables->down_rate_limit_us = down_limit;
+
+	sg_policy->up_rate_delay_ns = up_limit * NSEC_PER_USEC;
+	sg_policy->down_rate_delay_ns = down_limit * NSEC_PER_USEC;
+
+	update_min_rate_limit_us(sg_policy);
+}
+
+static void sugov_set_limits(struct sugov_cpu *sg_cpu)
+{
+	if ((sg_cpu->flags & SCHEDUTIL_ACTIVE) || 
+		(sg_cpu->flags & SCHEDUTIL_NORMAL)) {
+		__sugov_set_limits(sg_cpu, 
+			(sg_cpu->flags & SCHEDUTIL_ACTIVE));
+	}
+}
+
 static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time)
 {
 	/* Clear iowait_boost if the CPU apprears to have been idle. */
@@ -334,6 +378,8 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 
 	sugov_set_iowait_boost(sg_cpu, time);
 	sg_cpu->last_update = time;
+
+	sugov_set_limits(sg_cpu);
 
 	/*
 	 * For slow-switch systems, single policy requests can't run at the
@@ -439,6 +485,8 @@ static void sugov_update_shared(struct update_util_data *hook, u64 time,
 	sugov_set_iowait_boost(sg_cpu, time);
 	sg_cpu->last_update = time;
 
+	sugov_set_limits(sg_cpu);
+
 	if (sugov_should_update_freq(sg_policy, time)) {
 		if (flags & SCHED_CPUFREQ_DL)
 			next_f = sg_policy->policy->cpuinfo.max_freq;
@@ -513,16 +561,6 @@ static inline struct sugov_tunables *to_sugov_tunables(struct gov_attr_set *attr
 	return container_of(attr_set, struct sugov_tunables, attr_set);
 }
 
-static DEFINE_MUTEX(min_rate_lock);
-
-static void update_min_rate_limit_us(struct sugov_policy *sg_policy)
-{
-	mutex_lock(&min_rate_lock);
-	sg_policy->min_rate_limit_ns = min(sg_policy->up_rate_delay_ns,
-					   sg_policy->down_rate_delay_ns);
-	mutex_unlock(&min_rate_lock);
-}
-
 static ssize_t up_rate_limit_us_show(struct gov_attr_set *attr_set, char *buf)
 {
 	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
@@ -540,46 +578,12 @@ static ssize_t down_rate_limit_us_show(struct gov_attr_set *attr_set, char *buf)
 static ssize_t up_rate_limit_us_store(struct gov_attr_set *attr_set,
 				      const char *buf, size_t count)
 {
-	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
-	struct sugov_policy *sg_policy;
-	unsigned int rate_limit_us;
-
-	if (task_is_booster(current))
-		return count;
-
-	if (kstrtouint(buf, 10, &rate_limit_us))
-		return -EINVAL;
-
-	tunables->up_rate_limit_us = rate_limit_us;
-
-	list_for_each_entry(sg_policy, &attr_set->policy_list, tunables_hook) {
-		sg_policy->up_rate_delay_ns = rate_limit_us * NSEC_PER_USEC;
-		update_min_rate_limit_us(sg_policy);
-	}
-
 	return count;
 }
 
 static ssize_t down_rate_limit_us_store(struct gov_attr_set *attr_set,
 					const char *buf, size_t count)
 {
-	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
-	struct sugov_policy *sg_policy;
-	unsigned int rate_limit_us;
-
-	if (task_is_booster(current))
-		return count;
-
-	if (kstrtouint(buf, 10, &rate_limit_us))
-		return -EINVAL;
-
-	tunables->down_rate_limit_us = rate_limit_us;
-
-	list_for_each_entry(sg_policy, &attr_set->policy_list, tunables_hook) {
-		sg_policy->down_rate_delay_ns = rate_limit_us * NSEC_PER_USEC;
-		update_min_rate_limit_us(sg_policy);
-	}
-
 	return count;
 }
 
